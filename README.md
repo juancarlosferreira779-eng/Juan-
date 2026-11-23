@@ -7,7 +7,7 @@ Aplicación de mensajería en tiempo real completa, construida con **Node.js + E
 | Función | Implementación |
 | --- | --- |
 | Registro e inicio de sesión | Contraseñas con `scrypt`, sesiones en SQLite y cookie `HttpOnly`. |
-| Perfil | Foto, nombre, estado, descripción, color y cambio de contraseña. |
+| Perfil | Foto, nombre, estado, descripción, color, número de Paraguay (`09X XXX XXX` / `+595…`) y cambio de contraseña. |
 | Chats privados | Chats 1:1 en tiempo real con presencia y estados de lectura. |
 | Enviar y recibir mensajes | Socket.IO + REST, indicador de escritura, respuestas y reacciones. |
 | Editar y eliminar mensajes | Solo el autor (o admin de grupo para eliminar), con confirmación y indicador de *editado*. |

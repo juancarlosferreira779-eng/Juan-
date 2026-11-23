@@ -23,7 +23,7 @@ function chatName(chat, viewerId) {
 
 function serializeChat(chat, viewerId) {
   const members = db.prepare(`
-    SELECT u.id, u.name, u.avatar, u.color, u.status, cm.role, u.last_seen
+    SELECT u.id, u.name, u.avatar, u.color, u.status, u.phone, cm.role, u.last_seen
     FROM chat_members cm JOIN users u ON u.id = cm.user_id
     WHERE cm.chat_id = ? ORDER BY cm.joined_at ASC
   `).all(chat.id).map((m) => ({ ...m, online: onlineUsers.has(m.id), last_seen: m.last_seen || 0 }));

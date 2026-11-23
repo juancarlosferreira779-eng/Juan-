@@ -34,6 +34,17 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 const ioOf = (req) => req.app.get('io');
 const emailOk = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || ''));
 
+// Acepta 09X XXX XXX, 9X XXX XXX o +595 9X XXX XXX y devuelve +595XXXXXXXXX.
+function normalizePhone(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let digits = raw.replace(/\D/g, '');
+  if (digits.startsWith('595') && digits.length === 12) digits = digits.slice(3);
+  else if (digits.startsWith('0')) digits = digits.slice(1);
+  if (!/^[29]\d{8}$/.test(digits)) return null;
+  return `+595${digits}`;
+}
+
 /* --------------------------- Mail helpers ----------------------------- */
 function parseRecipients(value) {
   return [...new Set(String(value || '').split(/[,;]/).map((x) => x.trim().toLowerCase()).filter(emailOk))];
@@ -106,13 +117,15 @@ router.post('/auth/register', wrap((req, res) => {
   if (password.length < 6) return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
   if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email))
     return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
+  const phone = normalizePhone(req.body.phone);
+  if (phone === null) return res.status(400).json({ error: 'Número de Paraguay inválido (ej. 09X XXX XXX)' });
 
   const id = uid();
   const color = ['#7c5cff', '#00a884', '#f0647b', '#e58a2c', '#2f80ed', '#eb5757'][Math.floor(Math.random() * 6)];
-  db.prepare(`INSERT INTO users (id,name,email,password_hash,avatar,description,status,color,created_at,last_seen)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+  db.prepare(`INSERT INTO users (id,name,email,password_hash,avatar,description,status,color,phone,created_at,last_seen)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, name, email, hashPassword(password), avatarDataUrl(name, color),
-    String(req.body.description || '').trim().slice(0, 300), 'Disponible', color, now(), now(),
+    String(req.body.description || '').trim().slice(0, 300), 'Disponible', color, phone, now(), now(),
   );
   createSession(res, id);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
@@ -152,13 +165,14 @@ router.put('/me', requireAuth, wrap((req, res) => {
   const description = String(req.body.description ?? req.user.description).trim().slice(0, 300);
   const status = String(req.body.status ?? req.user.status).trim().slice(0, 80);
   const color = /^#[0-9a-f]{6}$/i.test(req.body.color || '') ? req.body.color : req.user.color;
+  const phone = req.body.phone === undefined ? req.user.phone : normalizePhone(req.body.phone);
   if (name.length < 2) return res.status(400).json({ error: 'El nombre es demasiado corto' });
-  db.prepare('UPDATE users SET name = ?, description = ?, status = ?, color = ? WHERE id = ?')
-    .run(name, description, status, color, req.user.id);
-  if (name !== req.user.name && !req.user.avatar.includes('data:image/svg')) {
-    // Keep the uploaded photo; initials are generated only for default avatars.
-  }
-  res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id)) });
+  if (phone === null) return res.status(400).json({ error: 'Número de Paraguay inválido (ej. 09X XXX XXX)' });
+  db.prepare('UPDATE users SET name = ?, description = ?, status = ?, color = ?, phone = ? WHERE id = ?')
+    .run(name, description, status, color, phone, req.user.id);
+  const user = publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id));
+  ioOf(req).emit('profile:updated', { userId: user.id, name: user.name, avatar: user.avatar, color: user.color, phone: user.phone, status: user.status, isAdmin: user.is_admin });
+  res.json({ user });
 }));
 
 router.post('/me/avatar', requireAuth, upload.single('avatar'), wrap((req, res) => {

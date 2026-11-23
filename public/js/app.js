@@ -82,6 +82,12 @@ function fmtSize(bytes) {
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
+function fmtPhone(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  if (d.startsWith('595') && d.length === 12) return `+595 ${d.slice(3, 5)} ${d.slice(5, 8)} ${d.slice(8)}`;
+  if (d.length === 10 && d.startsWith('0')) return `0${d.slice(1, 3)} ${d.slice(3, 6)} ${d.slice(6)}`;
+  return phone || '';
+}
 function initials(name = '') { return name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?'; }
 function avatarHTML(user = {}, extra = '') {
   const cls = `avatar ${extra}`;
@@ -149,12 +155,12 @@ function setAuthMode(mode) {
   $('#auth-error').classList.add('hidden');
 }
 
-async function submitAuth(email, password, name, description) {
+async function submitAuth(email, password, name, description, phone) {
   const errorBox = $('#auth-error');
   errorBox.classList.add('hidden');
   try {
     const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
-    const body = authMode === 'register' ? { name, email, password, description } : { email, password };
+    const body = authMode === 'register' ? { name, email, password, description, phone } : { email, password };
     const { user } = await json('POST', endpoint, body);
     state.me = user;
     $('#auth-form').reset();
@@ -364,7 +370,8 @@ function renderHeader() {
   if (chat.type === 'ai') status = 'Asistente inteligente · siempre en línea';
   else if (chat.type === 'direct') {
     const other = chat.members?.find((m) => m.id !== state.me.id);
-    status = other?.online ? 'En línea' : (other?.status || 'Desconectado');
+    const base = other?.online ? 'En línea' : (other?.status || 'Desconectado');
+    status = other?.phone ? `${base} · ${fmtPhone(other.phone)}` : base;
   } else status = `${chat.members?.length || 0} integrantes`;
   setHTML($('#chat-header-profile'), `
     ${chat.type === 'ai' ? '<span class="avatar" style="background:linear-gradient(135deg,#7c5cff,#0aa884);font-size:19px">✦</span>' : avatarHTML({ avatar: chat.avatar, color: chat.color, name: chat.name })}
@@ -705,6 +712,7 @@ function openSettingsModal() {
     <div class="form-grid">
       <label class="field"><span>Nombre</span><input id="profile-name" value="${esc(me.name)}" /></label>
       <label class="field"><span>Estado</span><input id="profile-status" value="${esc(me.status || '')}" placeholder="Disponible" /></label>
+      <label class="field full"><span>Número de Paraguay</span><input id="profile-phone" inputmode="tel" value="${esc(fmtPhone(me.phone))}" placeholder="09X XXX XXX o +595 9X XXX XXX" /></label>
       <label class="field full"><span>Descripción</span><textarea id="profile-desc" rows="2" maxlength="300">${esc(me.description || '')}</textarea></label>
     </div>
     <div class="field"><span>Color de perfil</span><div class="color-swatches">${colors.map((c) => `<button class="color-swatch ${me.color === c ? 'selected' : ''}" data-action="pick-color" data-color="${c}" style="background:${c}"></button>`).join('')}</div></div>
@@ -1081,6 +1089,8 @@ async function renderDetails(query = '') {
     <div class="details-body">
       <div class="profile-card">${chat.type === 'ai' ? '<span class="avatar" style="background:linear-gradient(135deg,#7c5cff,#0aa884);font-size:30px">✦</span>' : avatarHTML({ avatar: chat.avatar, color: chat.color, name: chat.name })}
         <strong>${esc(chat.name)}</strong><small>${chat.type === 'direct' ? 'Chat privado' : chat.type === 'ai' ? 'Asistente IA' : `${chat.type === 'community' ? 'Comunidad' : 'Grupo'} · ${chat.members?.length || 0} integrantes`}</small>
+        ${chat.type === 'direct' && chat.members?.find((m) => m.id !== state.me.id)?.phone
+          ? `<div style="margin-top:8px"><a href="tel:${esc(chat.members.find((m) => m.id !== state.me.id).phone)}" style="color:var(--accent);text-decoration:none">${icon('phone')} ${esc(fmtPhone(chat.members.find((m) => m.id !== state.me.id).phone))}</a></div>` : ''}
         <p class="muted">${esc(chat.description || '')}</p></div>
       ${chat.members?.length ? `<div class="panel-section"><h4>Integrantes</h4>${chat.members.map((m) => `<div class="member-row">${avatarHTML(m)}<div><strong>${esc(m.name)}</strong><small>${m.online ? 'En línea' : (m.status || m.role)}</small></div>${m.role === 'admin' ? '<span class="badge">Admin</span>' : ''}</div>`).join('')}</div>` : ''}
       ${media.length ? `<div class="panel-section"><h4>Fotos y videos</h4><div class="media-grid">${media.map((m) => m.kind === 'video' ? `<video src="${esc(m.fileUrl)}" data-action="open-image" data-id="${m.id}"></video>` : `<img src="${esc(m.fileUrl || m.text)}" data-action="open-image" data-id="${m.id}" loading="lazy" />`).join('')}</div></div>` : ''}
@@ -1414,7 +1424,8 @@ function bindGlobalEvents() {
           const modal = $('#modal-root .modal');
           await json('PUT', '/me', {
             name: $('#profile-name').value, status: $('#profile-status').value,
-            description: $('#profile-desc').value, color: modal?.dataset.chosenColor || state.me.color,
+            phone: $('#profile-phone').value, description: $('#profile-desc').value,
+            color: modal?.dataset.chosenColor || state.me.color,
           }).then(({ user }) => { state.me = user; });
           renderMyProfile(); closeModal(); toast('Perfil actualizado');
           break;
@@ -1551,7 +1562,7 @@ function bindGlobalEvents() {
 
   $('#auth-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    submitAuth($('#auth-email').value.trim(), $('#auth-password').value, $('#reg-name')?.value.trim(), $('#auth-form [name="description"]')?.value || '');
+    submitAuth($('#auth-email').value.trim(), $('#auth-password').value, $('#reg-name')?.value.trim(), $('#auth-form [name="description"]')?.value || '', $('#reg-phone')?.value.trim() || '');
   });
 
   $('#message-input').addEventListener('input', (e) => {

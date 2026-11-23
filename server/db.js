@@ -22,6 +22,7 @@ db.exec(`
     description TEXT DEFAULT '',
     status TEXT DEFAULT 'Disponible',
     color TEXT DEFAULT '#6d5dfc',
+    phone TEXT NOT NULL DEFAULT '',
     is_admin INTEGER NOT NULL DEFAULT 0,
     is_banned INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
@@ -152,6 +153,11 @@ db.exec(`
   );
 `);
 
+// Migración: bases de datos creadas antes del campo de teléfono.
+if (!db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'phone')) {
+  db.exec("ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ''");
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return `${salt}:${hash}`;
@@ -189,14 +195,14 @@ function seedDemo() {
   if (count > 0) return;
 
   const demoUsers = [
-    { id: 'demo-ana', name: 'Ana Torres', email: 'ana@demo.com', description: 'Diseñadora de producto. Café, diseño y buenas conversaciones ☕', color: '#7c5cff', status: 'Disponible', admin: 0 },
-    { id: 'demo-luis', name: 'Luis Ramírez', email: 'luis@demo.com', description: 'Desarrollador full stack. Siempre aprendiendo algo nuevo.', color: '#00a884', status: 'En el gimnasio', admin: 0 },
-    { id: 'demo-marta', name: 'Marta Sosa', email: 'marta@demo.com', description: 'Marketing y comunidad. Amo los gatos 🐈', color: '#f0647b', status: 'Disponible', admin: 0 },
-    { id: 'demo-admin', name: 'Sofía (Admin)', email: 'admin@demo.com', description: 'Administradora de Nexo Chat', color: '#e58a2c', status: 'Disponible', admin: 1 },
+    { id: 'demo-ana', name: 'Ana Torres', email: 'ana@demo.com', description: 'Diseñadora de producto. Café, diseño y buenas conversaciones ☕', color: '#7c5cff', status: 'Disponible', phone: '+595981123456', admin: 0 },
+    { id: 'demo-luis', name: 'Luis Ramírez', email: 'luis@demo.com', description: 'Desarrollador full stack. Siempre aprendiendo algo nuevo.', color: '#00a884', status: 'En el gimnasio', phone: '+595971234567', admin: 0 },
+    { id: 'demo-marta', name: 'Marta Sosa', email: 'marta@demo.com', description: 'Marketing y comunidad. Amo los gatos 🐈', color: '#f0647b', status: 'Disponible', phone: '+595991234567', admin: 0 },
+    { id: 'demo-admin', name: 'Sofía (Admin)', email: 'admin@demo.com', description: 'Administradora de Nexo Chat', color: '#e58a2c', status: 'Disponible', phone: '+595961234567', admin: 1 },
   ];
-  const insertUser = db.prepare(`INSERT INTO users (id,name,email,password_hash,avatar,description,status,color,is_admin,created_at,last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  const insertUser = db.prepare(`INSERT INTO users (id,name,email,password_hash,avatar,description,status,color,phone,is_admin,created_at,last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
   for (const u of demoUsers) {
-    insertUser.run(u.id, u.name, u.email, hashPassword('123456'), avatarDataUrl(u.name, u.color), u.description, u.status, u.color, u.admin, now() - 86400000 * 12, now());
+    insertUser.run(u.id, u.name, u.email, hashPassword('123456'), avatarDataUrl(u.name, u.color), u.description, u.status, u.color, u.phone, u.admin, now() - 86400000 * 12, now());
   }
 
   const t = now();
