@@ -25,6 +25,12 @@ Aplicación de mensajería en tiempo real completa, construida con **Node.js + E
 | Panel de administración | Métricas, usuarios, suspensiones, roles, eliminación y avisos masivos. |
 | Servidor y base de datos | Express + SQLite (`node:sqlite`) con WAL; `data/chat.db` y `data/uploads/`. |
 
+## Versión de un solo archivo
+
+`public/nexo-demo.html` contiene una **demo autocontenida** de chat, correo, estados, llamadas simuladas, IA y perfil con teléfono de Paraguay. No necesita servidor: ábrelo directamente en el navegador. Todo se guarda en `localStorage` y, si abres la misma página en dos pestañas, los cambios se sincronizan mediante el evento `storage`.
+
+> Es una demo: las contraseñas se guardan en el navegador, las llamadas son simuladas y el correo es interno. No usar para datos reales.
+
 ## Ejecutar
 
 Requiere **Node.js 22.5+** (usa el módulo nativo `node:sqlite`, sin dependencias nativas extra).
