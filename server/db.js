@@ -124,6 +124,32 @@ db.exec(`
     created_at INTEGER NOT NULL,
     ended_at INTEGER DEFAULT 0
   );
+
+  CREATE TABLE IF NOT EXISTS emails (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sender_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    from_email TEXT NOT NULL,
+    to_email TEXT NOT NULL,
+    cc TEXT DEFAULT '',
+    bcc TEXT DEFAULT '',
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    attachments TEXT NOT NULL DEFAULT '[]',
+    folder TEXT NOT NULL DEFAULT 'inbox',
+    star INTEGER NOT NULL DEFAULT 0,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_emails_owner_folder ON emails(owner_id, folder, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS mail_contacts (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, email)
+  );
 `);
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -200,6 +226,22 @@ function seedDemo() {
   ];
   seedMessages.forEach((m, i) => insertMessage.run(`seed-msg-${i}`, ...m));
   db.prepare('INSERT INTO message_reactions (message_id,user_id,emoji) VALUES (?,?,?)').run('seed-msg-1', 'demo-ana', '❤️');
+
+  const insertEmail = db.prepare(`INSERT INTO emails
+    (id,owner_id,sender_id,from_email,to_email,cc,bcc,subject,body,attachments,folder,star,is_read,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  insertEmail.run('seed-mail-1', 'demo-ana', 'demo-luis', 'luis@demo.com', 'ana@demo.com', '', '',
+    'Reunión de mañana', 'Hola Ana:\n\n¿Podemos revisar el prototipo a primera hora? Traigo el backend listo.\n\nSaludos,\nLuis', '[]', 'inbox', 0, 0, t - 3600000);
+  insertEmail.run('seed-mail-2', 'demo-ana', 'demo-marta', 'marta@demo.com', 'ana@demo.com', '', '',
+    'Ideas para el grupo', '¡Hola! Dejé algunas ideas para el próximo lanzamiento en el documento compartido. ¿Lo revisamos?', '[]', 'inbox', 1, 1, t - 86400000);
+  insertEmail.run('seed-mail-3', 'demo-ana', 'demo-ana', 'ana@demo.com', 'luis@demo.com', '', '',
+    'Prototipo listo', 'Ya subí la última versión del prototipo. ¡Gracias por tu ayuda!', '[]', 'sent', 0, 1, t - 7200000);
+  insertEmail.run('seed-mail-4', 'demo-ana', 'demo-ana', 'ana@demo.com', '', '', '',
+    'Borrador de propuesta', 'Propuesta para el equipo:\n\n1. ...\n2. ...', '[]', 'drafts', 0, 1, t - 172800000);
+  insertEmail.run('seed-mail-5', 'demo-luis', 'demo-ana', 'ana@demo.com', 'luis@demo.com', '', '',
+    'Gracias por el prototipo', 'Se ve excelente. Lo reviso esta tarde.', '[]', 'inbox', 0, 1, t - 5400000);
+  db.prepare('INSERT INTO mail_contacts (user_id,email,name,created_at) VALUES (?,?,?,?)').run('demo-ana', 'luis@demo.com', 'Luis Ramírez', t - 86400000);
+  db.prepare('INSERT INTO mail_contacts (user_id,email,name,created_at) VALUES (?,?,?,?)').run('demo-ana', 'marta@demo.com', 'Marta Sosa', t - 86400000);
 
   const insertStory = db.prepare('INSERT INTO stories (id,user_id,kind,text,file_url,file_mime,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?)');
   insertStory.run('seed-story-1', 'demo-marta', 'text', '¡Nuevo día, nuevas ideas! ✨', '', '', t - 3600000, t + 23 * 3600000);

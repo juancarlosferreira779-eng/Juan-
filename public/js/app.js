@@ -44,6 +44,9 @@ const ICONS = {
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
+  mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  forward: '<path d="m14 17 5-5-5-5M5 12h12"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 function hydrateIcons(root = document) {
@@ -86,13 +89,13 @@ function avatarHTML(user = {}, extra = '') {
   const color = user.color || '#7c5cff';
   return `<span class="${cls}" style="background:linear-gradient(135deg,${esc(color)},#253b4a)">${esc(initials(user.name))}</span>`;
 }
-function toast(title, body = '', type = '') {
+function toast(title, body = '', type = '', actionHTML = '') {
   const root = $('#toast-root');
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.innerHTML = `<div style="flex:1"><strong>${esc(title)}</strong>${body ? `<small>${esc(body)}</small>` : ''}</div><button data-action="dismiss-toast" aria-label="Cerrar">×</button>`;
+  el.innerHTML = `<div style="flex:1"><strong>${esc(title)}</strong>${body ? `<small>${esc(body)}</small>` : ''}${actionHTML}</div><button data-action="dismiss-toast" aria-label="Cerrar">×</button>`;
   root.appendChild(el);
-  setTimeout(() => el.remove(), 4800);
+  setTimeout(() => el.remove(), 6000);
 }
 
 /* ------------------------------- API ---------------------------------- */
@@ -130,6 +133,7 @@ const state = {
   typingUser: null,
   theme: localStorage.getItem('nexo-theme') || 'light',
   pendingCall: null,
+  mail: { open: false, folder: 'inbox', emails: [], contacts: [], counts: {}, selectedId: null, q: '', editingId: null },
 };
 let call = null; // instanciada después de definir CallManager
 
@@ -167,8 +171,9 @@ async function boot() {
   hydrateIcons();
   bindGlobalEvents();
   try {
-    const { user } = await api('/me');
+    const { user, unreadMail } = await api('/me');
     state.me = user;
+    state.mail.counts.unread = unreadMail || 0;
     await enterApp();
   } catch {
     $('#auth-view').classList.remove('hidden');
@@ -185,6 +190,7 @@ async function enterApp() {
   renderChatList();
   renderStories();
   renderNotificationsBadge();
+  renderMailBadge();
   if (state.me.is_admin && !document.querySelector('.icon-actions [data-action="admin-panel"]')) {
     const btn = document.createElement('button');
     btn.className = 'icon-btn';
@@ -230,6 +236,17 @@ function connectSocket() {
     if ('Notification' in window && Notification.permission === 'granted') {
       try { new Notification(notification.title, { body: notification.body }); } catch { /* ignore */ }
     }
+  });
+  socket.on('mail:new', ({ email, unread }) => {
+    state.mail.counts.unread = unread;
+    renderMailBadge();
+    toast('Nuevo correo', `${email.fromName}: ${email.subject}`, '', `<div style="margin-top:6px"><button class="text-btn" data-action="mail-open-new" data-id="${email.id}">Abrir correo →</button></div>`);
+    if (state.mail.open) loadMail();
+  });
+  socket.on('mail:updated', ({ unread }) => {
+    if (typeof unread === 'number') state.mail.counts.unread = unread;
+    renderMailBadge();
+    if (state.mail.open) loadMail();
   });
   socket.on('presence', ({ userId, online }) => {
     state.chats.forEach((c) => c.members?.forEach((m) => { if (m.id === userId) m.online = online; }));
@@ -441,6 +458,7 @@ function renderNotificationsBadge() {
 
 /* --------------------------- Chat selection --------------------------- */
 async function selectChat(id) {
+  if (state.mail.open) closeMailView();
   state.activeChatId = id;
   state.replyTo = null; state.editingId = null; state.typingUser = null;
   renderComposerBanner(); renderTyping();
@@ -1072,6 +1090,211 @@ async function renderDetails(query = '') {
 
 function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
 
+/* -------------------------------- MAIL -------------------------------- */
+const MAIL_FOLDERS = [
+  { id: 'inbox', label: 'Recibidos', icon: 'mail' },
+  { id: 'sent', label: 'Enviados', icon: 'send' },
+  { id: 'drafts', label: 'Borradores', icon: 'edit' },
+  { id: 'starred', label: 'Favoritos', icon: 'heart' },
+  { id: 'trash', label: 'Papelera', icon: 'trash' },
+  { id: 'contacts', label: 'Contactos', icon: 'users' },
+  { id: 'bulk', label: 'Envío masivo', icon: 'broadcast' },
+];
+
+function renderMailBadge() {
+  const n = Number(state.mail.counts.unread || 0);
+  const badge = $('#mail-badge');
+  badge?.classList.toggle('hidden', !n);
+  if (badge) badge.title = `${n} correos sin leer`;
+}
+
+async function openMailView() {
+  state.mail.open = true;
+  $('#mail-view').classList.remove('hidden');
+  $('#chat-area').classList.add('hidden');
+  $('#details-panel').classList.add('hidden');
+  await loadMail();
+}
+
+function closeMailView() {
+  state.mail.open = false;
+  $('#mail-view').classList.add('hidden');
+  $('#mail-view').classList.remove('reader-open');
+  $('#chat-area').classList.remove('hidden');
+}
+
+async function loadMail() {
+  const { folder, q } = state.mail;
+  try {
+    const { emails, counts, contacts } = await api(`/mail?folder=${encodeURIComponent(folder)}&q=${encodeURIComponent(q)}`);
+    state.mail.emails = emails;
+    state.mail.counts = counts;
+    state.mail.contacts = contacts;
+    if (state.mail.selectedId && !emails.some((e) => e.id === state.mail.selectedId)) state.mail.selectedId = null;
+    renderMailBadge(); renderMailFolders(); renderMailList(); renderMailReader();
+  } catch (err) { toast('No se pudo cargar el correo', err.message, 'error'); }
+}
+
+function setMailFolder(folder) {
+  state.mail.folder = folder;
+  state.mail.selectedId = null;
+  state.mail.q = '';
+  const search = $('#mail-search'); if (search) search.value = '';
+  loadMail();
+}
+
+function renderMailFolders() {
+  const counts = state.mail.counts || {};
+  setHTML($('#mail-folders-list'), MAIL_FOLDERS.map((f) => {
+    const n = counts[f.id];
+    const special = ['contacts', 'bulk'].includes(f.id);
+    return `<button class="mail-folder ${state.mail.folder === f.id ? 'active' : ''}" data-action="mail-folder" data-folder="${f.id}">
+      <span><span data-icon="${f.icon}"></span>${esc(f.label)}</span>
+      ${!special && n ? `<i class="mail-count">${n}</i>` : ''}
+    </button>`;
+  }).join(''));
+}
+
+function renderMailList() {
+  const box = $('#mail-list');
+  const folder = state.mail.folder;
+  if (folder === 'contacts' || folder === 'bulk') {
+    setHTML(box, `<div class="mail-list-note">${folder === 'contacts'
+      ? 'Gestiona tus contactos desde el panel de lectura.'
+      : 'Prepara campañas para tus contactos autorizados (máximo 100).'}</div>`);
+    return;
+  }
+  if (!state.mail.emails.length) {
+    setHTML(box, `<div class="chat-empty">No hay correos aquí todavía.</div>`);
+    return;
+  }
+  setHTML(box, state.mail.emails.map((e) => {
+    const who = (e.folder === 'sent' || e.folder === 'drafts')
+      ? `Para: ${e.to || '(sin destinatario)'}` : e.fromName;
+    const preview = String(e.body || '').replace(/\s+/g, ' ').slice(0, 95);
+    return `<button class="mail-item ${!e.read && e.folder === 'inbox' ? 'unread' : ''} ${state.mail.selectedId === e.id ? 'selected' : ''}" data-action="mail-open" data-id="${e.id}">
+      <span class="mail-item-top"><strong>${esc(who)}</strong><small>${fmtTime(e.createdAt)}</small></span>
+      <span class="mail-item-subject">${e.star ? '⭐ ' : ''}${esc(e.subject || '(sin asunto)')}</span>
+      <span class="mail-item-preview">${esc(preview)}</span>
+    </button>`;
+  }).join(''));
+}
+
+function renderMailReader() {
+  const box = $('#mail-reader');
+  const folder = state.mail.folder;
+  $('#mail-view').classList.toggle('reader-open', ['contacts', 'bulk'].includes(folder) || Boolean(state.mail.selectedId));
+  const back = `<button class="mail-back icon-btn" data-action="mail-close-reader" title="Volver">${icon('arrow-left')}</button>`;
+
+  if (folder === 'contacts') {
+    setHTML(box, `${back}<h2>Contactos</h2>
+      <p class="muted">Solo estos correos pueden incluirse en envíos masivos.</p>
+      <div class="mail-form-row"><input id="mail-contact-email" placeholder="correo@ejemplo.com" /><input id="mail-contact-name" placeholder="Nombre (opcional)" /><button class="btn btn-primary btn-sm" data-action="mail-add-contact">Agregar</button></div>
+      <div style="margin-top:18px">${state.mail.contacts.length ? state.mail.contacts.map((c) => `
+        <div class="mail-contact-row"><span data-icon="mail"></span><div><strong>${esc(c.name || c.email)}</strong><small>${esc(c.email)}</small></div>
+        <button class="icon-btn" data-action="mail-delete-contact" data-email="${esc(c.email)}" title="Eliminar">${icon('trash')}</button></div>`).join('') : '<div class="chat-empty">Aún no tienes contactos.</div>'}</div>`);
+    return;
+  }
+
+  if (folder === 'bulk') {
+    setHTML(box, `${back}<h2>Envío masivo</h2>
+      <p class="muted">Máximo 100 destinatarios, todos deben estar en tus contactos.</p>
+      <label class="field"><span>Destinatarios</span><textarea id="mail-bulk-to" rows="3" placeholder="correo1@ejemplo.com, correo2@ejemplo.com">${esc(state.mail.contacts.map((c) => c.email).join(', '))}</textarea></label>
+      <label class="field"><span>Asunto</span><input id="mail-bulk-subject" /></label>
+      <label class="field"><span>Mensaje</span><textarea id="mail-bulk-body" rows="8"></textarea></label>
+      <button class="btn btn-primary" style="margin-top:12px" data-action="mail-bulk-send">Preparar y enviar campaña</button>`);
+    return;
+  }
+
+  const email = state.mail.emails.find((e) => e.id === state.mail.selectedId);
+  if (!email) {
+    setHTML(box, `<div class="mail-placeholder"><span data-icon="mail"></span><h3>Selecciona un correo</h3><p class="muted">O pulsa «Redactar» para escribir uno nuevo.</p></div>`);
+    return;
+  }
+  const attachments = (email.attachments || []).map((a) => `
+    <a class="mail-attachment" href="${esc(a.url)}" download="${esc(a.name)}">${icon('download')}<span>${esc(a.name)}</span><small>${fmtSize(a.size)}</small></a>`).join('');
+  setHTML(box, `<div class="mail-reader-head">
+      ${back}<h2>${esc(email.subject || '(sin asunto)')}</h2>
+      <div class="mail-toolbar">
+        <button class="btn btn-ghost btn-sm" data-action="mail-reply" data-id="${email.id}">Responder</button>
+        <button class="btn btn-ghost btn-sm" data-action="mail-forward" data-id="${email.id}">Reenviar</button>
+        <button class="icon-btn" data-action="mail-star" data-id="${email.id}" title="Favorito">${esc(email.star ? '⭐' : '☆')}</button>
+        <button class="icon-btn" data-action="mail-toggle-read" data-id="${email.id}" title="Marcar como no leído">${icon(email.read ? 'mail' : 'check')}</button>
+        <button class="icon-btn" data-action="mail-trash" data-id="${email.id}" title="Papelera">${icon('trash')}</button>
+        <button class="icon-btn" data-action="mail-delete" data-id="${email.id}" title="Eliminar definitivamente">${icon('x')}</button>
+      </div>
+    </div>
+    <div class="mail-meta">
+      <div class="avatar" style="background:${esc(email.fromColor || '#7c5cff')}">${esc(initials(email.fromName))}</div>
+      <div><strong>${esc(email.fromName)}</strong> &lt;${esc(email.fromEmail)}&gt;<br/><small>Para: ${esc(email.to || '—')}${email.cc ? ` · CC: ${esc(email.cc)}` : ''} · ${new Date(email.createdAt).toLocaleString('es')}</small></div>
+    </div>
+    <div class="mail-body">${esc(email.body)}</div>
+    ${attachments ? `<div class="mail-attachments"><h4>Archivos adjuntos</h4>${attachments}</div>` : ''}`);
+}
+
+async function openMail(id) {
+  try {
+    const { email, unread } = await api(`/mail/${encodeURIComponent(id)}`);
+    if (typeof unread === 'number') state.mail.counts.unread = unread;
+    const idx = state.mail.emails.findIndex((e) => e.id === id);
+    if (idx >= 0) state.mail.emails[idx] = email; else state.mail.emails.unshift(email);
+    state.mail.selectedId = id;
+    renderMailBadge(); renderMailList(); renderMailReader();
+  } catch (err) { toast('No se pudo abrir el correo', err.message, 'error'); }
+}
+
+async function openMailCompose(id = null, prefill = {}) {
+  let draft = null;
+  if (id) {
+    try { draft = (await api(`/mail/${encodeURIComponent(id)}`)).email; } catch { /* ignore */ }
+  }
+  state.mail.editingId = id;
+  const values = { ...(draft || {}), ...prefill };
+  openModal(draft ? 'Editar borrador' : 'Nuevo correo', `
+    <div class="form-grid">
+      <label class="field"><span>Para</span><input id="mail-to" value="${esc(values.to || '')}" placeholder="correo@ejemplo.com" /></label>
+      <label class="field"><span>CC</span><input id="mail-cc" value="${esc(values.cc || '')}" placeholder="Copia" /></label>
+      <label class="field"><span>CCO</span><input id="mail-bcc" value="${esc(values.bcc || '')}" placeholder="Copia oculta" /></label>
+      <label class="field"><span>Asunto</span><input id="mail-subject" value="${esc(values.subject || '')}" placeholder="Asunto del correo" /></label>
+      <label class="field full"><span>Mensaje</span><textarea id="mail-body" rows="10" placeholder="Escribe tu mensaje…">${esc(values.body || '')}</textarea></label>
+      <label class="field full"><span>Adjuntar archivos</span><input id="mail-files" type="file" multiple /></label>
+    </div>`,
+    `<button class="btn btn-ghost" data-action="mail-close-compose">Cancelar</button>
+     <button class="btn btn-ghost" data-action="mail-draft">Guardar borrador</button>
+     <button class="btn btn-primary" data-action="mail-send">Enviar correo</button>`);
+}
+
+async function submitMail(action) {
+  const fd = new FormData();
+  fd.append('action', action);
+  fd.append('to', $('#mail-to').value);
+  fd.append('cc', $('#mail-cc').value);
+  fd.append('bcc', $('#mail-bcc').value);
+  fd.append('subject', $('#mail-subject').value);
+  fd.append('body', $('#mail-body').value);
+  [...$('#mail-files').files].forEach((file) => fd.append('files', file));
+  const editing = state.mail.editingId;
+  try {
+    const result = editing
+      ? await api(`/mail/${encodeURIComponent(editing)}`, { method: 'PUT', body: fd })
+      : await api('/mail', { method: 'POST', body: fd });
+    state.mail.editingId = null;
+    if (action === 'send') state.mail.folder = 'sent';
+    closeModal();
+    await loadMail();
+    toast(action === 'draft' ? 'Borrador guardado' : 'Correo enviado',
+      result.delivered ? `Entregado a ${result.delivered} usuario(s) de Nexo` : '');
+  } catch (err) { toast('No se pudo guardar', err.message, 'error'); }
+}
+
+async function mailAction(id, endpoint, options = {}) {
+  try {
+    await api(`/mail/${encodeURIComponent(id)}/${endpoint}`, { method: 'POST', body: JSON.stringify(options), headers: { 'Content-Type': 'application/json' } });
+    if (endpoint === 'trash' || endpoint === '') state.mail.selectedId = null;
+    await loadMail();
+  } catch (err) { toast('No se pudo actualizar el correo', err.message, 'error'); }
+}
+
 /* ------------------------- Global click handler ----------------------- */
 function bindGlobalEvents() {
   document.addEventListener('click', async (e) => {
@@ -1250,6 +1473,71 @@ function bindGlobalEvents() {
           toast('Aviso enviado', `Notificados ${sent} usuarios`); $('#bc-body').value = '';
           break;
         }
+        /* mail */
+        case 'open-mail': await openMailView(); break;
+        case 'close-mail': closeMailView(); break;
+        case 'mail-refresh': await loadMail(); break;
+        case 'mail-close-reader':
+          if (['contacts', 'bulk'].includes(state.mail.folder)) setMailFolder('inbox');
+          else { state.mail.selectedId = null; renderMailList(); renderMailReader(); }
+          break;
+        case 'mail-folder': setMailFolder(target.dataset.folder); break;
+        case 'mail-open': await openMail(id); break;
+        case 'mail-open-new': {
+          const open = $('#mail-view').classList.contains('hidden');
+          if (open) await openMailView();
+          await openMail(id);
+          break;
+        }
+        case 'mail-compose': await openMailCompose(); break;
+        case 'mail-send': submitMail('send'); break;
+        case 'mail-draft': submitMail('draft'); break;
+        case 'mail-close-compose': state.mail.editingId = null; closeModal(); break;
+        case 'mail-star': await mailAction(id, 'star'); break;
+        case 'mail-toggle-read': {
+          const current = state.mail.emails.find((e) => e.id === id);
+          await mailAction(id, 'read', { read: !current?.read });
+          break;
+        }
+        case 'mail-trash': await mailAction(id, 'trash'); break;
+        case 'mail-delete':
+          if (confirm('¿Eliminar este correo definitivamente?')) {
+            try { await api(`/mail/${encodeURIComponent(id)}`, { method: 'DELETE' }); state.mail.selectedId = null; await loadMail(); }
+            catch (err) { toast('No se pudo eliminar', err.message, 'error'); }
+          }
+          break;
+        case 'mail-reply': {
+          const m = state.mail.emails.find((e) => e.id === id);
+          if (m) await openMailCompose(null, { to: m.fromEmail, subject: m.subject.startsWith('Re:') ? m.subject : `Re: ${m.subject}`, body: `\n\n---------- Mensaje original ----------\nDe: ${m.fromName} <${m.fromEmail}>\n${m.body}` });
+          break;
+        }
+        case 'mail-forward': {
+          const m = state.mail.emails.find((e) => e.id === id);
+          if (m) await openMailCompose(null, { subject: m.subject.startsWith('Fwd:') ? m.subject : `Fwd: ${m.subject}`, body: `\n\n---------- Correo reenviado ----------\nDe: ${m.fromName} <${m.fromEmail}>\nPara: ${m.to}\n\n${m.body}` });
+          break;
+        }
+        case 'mail-add-contact': {
+          const email = $('#mail-contact-email').value.trim();
+          const name = $('#mail-contact-name').value.trim();
+          try { await json('POST', '/mail/contacts', { email, name }); await loadMail(); toast('Contacto agregado'); }
+          catch (err) { toast('No se pudo agregar', err.message, 'error'); }
+          break;
+        }
+        case 'mail-delete-contact': {
+          try { await api(`/mail/contacts/${encodeURIComponent(target.dataset.email)}`, { method: 'DELETE' }); await loadMail(); }
+          catch (err) { toast('No se pudo eliminar', err.message, 'error'); }
+          break;
+        }
+        case 'mail-bulk-send': {
+          const recipients = $('#mail-bulk-to').value.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+          try {
+            const { delivered } = await json('POST', '/mail/bulk', { recipients, subject: $('#mail-bulk-subject').value, body: $('#mail-bulk-body').value });
+            $('#mail-bulk-subject').value = ''; $('#mail-bulk-body').value = '';
+            await loadMail();
+            toast('Campaña enviada', `Entregada a ${delivered} usuario(s) de Nexo`);
+          } catch (err) { toast('No se pudo enviar', err.message, 'error'); }
+          break;
+        }
         /* modal */
         case 'close-modal': target.closest('.modal-overlay') ? closeModal() : closeStoryViewer(); break;
         case 'overlay-close': if (e.target === target) closeModal(); break;
@@ -1290,6 +1578,10 @@ function bindGlobalEvents() {
     } else state.searchResults = [];
     renderChatList();
   }, 300));
+  $('#mail-search').addEventListener('input', debounce((e) => {
+    state.mail.q = e.target.value.trim();
+    if (state.mail.open) loadMail();
+  }, 300));
   window.addEventListener('beforeunload', () => state.socket?.disconnect());
 }
 
@@ -1298,6 +1590,10 @@ async function doLogout() {
   try { await api('/auth/logout', { method: 'POST' }); } catch { /* ignore */ }
   if (state.socket) { state.socket.disconnect(); state.socket = null; }
   Object.assign(state, { me: null, chats: [], messages: [], activeChat: null, activeChatId: null, stories: [], notifications: [], detailsMode: null });
+  state.mail = { open: false, folder: 'inbox', emails: [], contacts: [], counts: {}, selectedId: null, q: '', editingId: null };
+  $('#mail-view').classList.add('hidden');
+  $('#chat-area').classList.remove('hidden');
+  renderMailBadge();
   $('#app-view').classList.add('hidden');
   $('#auth-view').classList.remove('hidden');
   $('#modal-root').innerHTML = '';

@@ -18,6 +18,7 @@ Aplicación de mensajería en tiempo real completa, construida con **Node.js + E
 | Estados de 24 h | Publicación de texto/imagen/video, expiración automática y visualización con barra de progreso. |
 | Emojis, stickers y GIF | Selector integrado + pegado de URLs de GIF. |
 | Buscador de mensajes | Búsqueda global y por chat con salto al mensaje. |
+| Correo integrado | Bandejas (recibidos, enviados, borradores, favoritos, papelera), contactos, envío masivo a contactos, adjuntos, responder/reenviar y notificación en tiempo real al destinatario de Nexo. |
 | Modo oscuro y claro | Persistido en `localStorage`. |
 | Inteligencia artificial | Asistente «Nexo IA» con respuestas locales y soporte opcional para API compatible con OpenAI. |
 | Notificaciones | In-app en tiempo real + notificaciones del navegador (con permiso). |
@@ -82,3 +83,4 @@ data/           # SQLite + archivos subidos (ignorado por Git)
 - Las llamadas WebRTC son peer-to-peer: en redes restrictivas necesitas un servidor **TURN** (el STUN de Google está configurado por defecto).
 - La app está pensada como demo autocontenida. Para producción, añade HTTPS, `secure: true` en la cookie, rate limiting y backups de `data/chat.db`.
 - Los GIF del selector se cargan desde la CDN de Giphy; también puedes pegar cualquier URL HTTPS de GIF.
+- El correo integrado es interno: entrega mensajes a usuarios registrados en Nexo y guarda copia en Enviados. Para enviar a correos externos reales hace falta conectar SMTP/API de correo. Todo el HTML se escapa y los archivos se validan antes de guardarse.

@@ -21,9 +21,79 @@ const upload = multer({
   },
 });
 
+const mailUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 30 * 1024 * 1024, files: 10 },
+  fileFilter: (req, file, cb) => {
+    if (allowedFile(file.mimetype)) cb(null, true);
+    else cb(new Error('Tipo de archivo no permitido en el correo'));
+  },
+});
+
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const ioOf = (req) => req.app.get('io');
 const emailOk = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || ''));
+
+/* --------------------------- Mail helpers ----------------------------- */
+function parseRecipients(value) {
+  return [...new Set(String(value || '').split(/[,;]/).map((x) => x.trim().toLowerCase()).filter(emailOk))];
+}
+
+function serializeEmail(row, viewerId) {
+  const sender = row.sender_id ? db.prepare('SELECT id,name,email,avatar,color FROM users WHERE id = ?').get(row.sender_id) : null;
+  let attachments = [];
+  try { attachments = JSON.parse(row.attachments || '[]'); } catch { attachments = []; }
+  return {
+    id: row.id,
+    fromEmail: row.from_email,
+    fromName: sender?.name || row.from_email.split('@')[0] || 'Desconocido',
+    fromAvatar: sender?.avatar || '',
+    fromColor: sender?.color || '#7c5cff',
+    to: row.to_email,
+    cc: row.cc || '',
+    bcc: row.bcc || '',
+    subject: row.subject,
+    body: row.body,
+    attachments,
+    folder: row.folder,
+    star: Boolean(row.star),
+    read: Boolean(row.is_read),
+    createdAt: row.created_at,
+    mine: row.sender_id === viewerId,
+  };
+}
+
+function unreadMail(userId) {
+  return db.prepare("SELECT COUNT(*) AS n FROM emails WHERE owner_id = ? AND folder = 'inbox' AND is_read = 0").get(userId).n;
+}
+
+function mailAttachments(files = []) {
+  return files.map((file) => {
+    const saved = saveUpload(file);
+    return { name: saved.name, url: saved.url, size: saved.size, mime: saved.mime };
+  });
+}
+
+function deliverEmail(req, payload, attachments, recipients) {
+  const io = ioOf(req);
+  const created = [];
+  for (const email of recipients) {
+    const recipient = db.prepare('SELECT id FROM users WHERE email = ? AND is_banned = 0').get(email);
+    if (!recipient || recipient.id === req.user.id) continue;
+    const id = uid();
+    db.prepare(`INSERT INTO emails
+      (id,owner_id,sender_id,from_email,to_email,cc,bcc,subject,body,attachments,folder,star,is_read,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, recipient.id, req.user.id, req.user.email, email, payload.cc, '', payload.subject, payload.body,
+        JSON.stringify(attachments), 'inbox', 0, 0, now());
+    const row = db.prepare('SELECT * FROM emails WHERE id = ?').get(id);
+    const item = serializeEmail(row, recipient.id);
+    created.push(item);
+    notify(recipient.id, { type: 'mail', title: `Nuevo correo de ${req.user.name}`, body: payload.subject, chatId: '' });
+    emitToUser(io, recipient.id, 'mail:new', { email: item, unread: unreadMail(recipient.id) });
+  }
+  return created;
+}
 
 /* ------------------------------- AUTH ---------------------------------- */
 
@@ -70,6 +140,7 @@ router.get('/me', requireAuth, wrap((req, res) => {
   res.json({
     user: publicUser(req.user),
     onlineCount: require('./helpers').onlineUsers.size,
+    unreadMail: unreadMail(req.user.id),
     aiConfigured: Boolean(process.env.OPENAI_API_KEY),
   });
 }));
@@ -442,6 +513,182 @@ router.post('/admin/broadcast', requireAuth, requireAdmin, wrap((req, res) => {
   const users = db.prepare('SELECT id FROM users').all();
   for (const u of users) notify(u.id, { type: 'broadcast', title, body });
   res.json({ ok: true, sent: users.length });
+}));
+
+/* -------------------------------- MAIL -------------------------------- */
+
+router.get('/mail', requireAuth, wrap((req, res) => {
+  const allowed = ['inbox', 'sent', 'drafts', 'starred', 'trash'];
+  const folder = allowed.includes(req.query.folder) ? req.query.folder : 'inbox';
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const params = [req.user.id];
+  let sql = 'SELECT * FROM emails WHERE owner_id = ?';
+  if (folder === 'starred') sql += " AND star = 1 AND folder != 'trash'";
+  else { sql += ' AND folder = ?'; params.push(folder); }
+  if (q) {
+    const like = `%${q.replace(/[%_]/g, '\\$&')}%`;
+    sql += " AND (subject LIKE ? OR body LIKE ? OR to_email LIKE ? OR from_email LIKE ?)";
+    params.push(like, like, like, like);
+  }
+  sql += ' ORDER BY created_at DESC LIMIT 200';
+  const rows = db.prepare(sql).all(...params);
+  const raw = db.prepare(`SELECT
+      SUM(CASE WHEN folder = 'inbox' THEN 1 ELSE 0 END) AS inbox,
+      SUM(CASE WHEN folder = 'sent' THEN 1 ELSE 0 END) AS sent,
+      SUM(CASE WHEN folder = 'drafts' THEN 1 ELSE 0 END) AS drafts,
+      SUM(CASE WHEN folder = 'trash' THEN 1 ELSE 0 END) AS trash,
+      SUM(CASE WHEN star = 1 AND folder != 'trash' THEN 1 ELSE 0 END) AS starred,
+      SUM(CASE WHEN folder = 'inbox' AND is_read = 0 THEN 1 ELSE 0 END) AS unread
+    FROM emails WHERE owner_id = ?`).get(req.user.id);
+  const counts = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, Number(v || 0)]));
+  const contacts = db.prepare('SELECT email,name FROM mail_contacts WHERE user_id = ? ORDER BY email').all(req.user.id);
+  res.json({ emails: rows.map((r) => serializeEmail(r, req.user.id)), counts, contacts });
+}));
+
+router.get('/mail/contacts', requireAuth, wrap((req, res) => {
+  res.json({ contacts: db.prepare('SELECT email,name FROM mail_contacts WHERE user_id = ? ORDER BY email').all(req.user.id) });
+}));
+
+router.post('/mail/contacts', requireAuth, wrap((req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!emailOk(email)) return res.status(400).json({ error: 'Correo no válido' });
+  const name = String(req.body.name || '').trim().slice(0, 80);
+  db.prepare('INSERT OR IGNORE INTO mail_contacts (user_id,email,name,created_at) VALUES (?,?,?,?)')
+    .run(req.user.id, email, name, now());
+  res.status(201).json({ contacts: db.prepare('SELECT email,name FROM mail_contacts WHERE user_id = ? ORDER BY email').all(req.user.id) });
+}));
+
+router.delete('/mail/contacts/:email', requireAuth, wrap((req, res) => {
+  db.prepare('DELETE FROM mail_contacts WHERE user_id = ? AND email = ?').run(req.user.id, decodeURIComponent(req.params.email).toLowerCase());
+  res.json({ ok: true });
+}));
+
+router.get('/mail/:id', requireAuth, wrap((req, res) => {
+  const row = db.prepare('SELECT * FROM emails WHERE id = ? AND owner_id = ?').get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'Correo no encontrado' });
+  if (row.folder === 'inbox' && !row.is_read) {
+    db.prepare('UPDATE emails SET is_read = 1 WHERE id = ?').run(row.id);
+    emitToUser(ioOf(req), req.user.id, 'mail:updated', { unread: unreadMail(req.user.id) });
+  }
+  res.json({ email: serializeEmail(db.prepare('SELECT * FROM emails WHERE id = ?').get(row.id), req.user.id), unread: unreadMail(req.user.id) });
+}));
+
+router.post('/mail', requireAuth, mailUpload.array('files', 10), wrap((req, res) => {
+  const action = req.body.action === 'draft' ? 'draft' : 'send';
+  const payload = {
+    to: String(req.body.to || '').trim(),
+    cc: String(req.body.cc || '').trim(),
+    bcc: String(req.body.bcc || '').trim(),
+    subject: String(req.body.subject || '').trim().slice(0, 200),
+    body: String(req.body.body || '').trim().slice(0, 20000),
+  };
+  const recipients = parseRecipients(`${payload.to},${payload.cc},${payload.bcc}`);
+  if (action === 'send' && (!recipients.length || !payload.subject || !payload.body))
+    return res.status(400).json({ error: 'Completa destinatario, asunto y mensaje' });
+  if (action === 'draft' && !payload.to && !payload.subject && !payload.body && !(req.files || []).length)
+    return res.status(400).json({ error: 'El borrador está vacío' });
+
+  const attachments = mailAttachments(req.files);
+  const id = uid();
+  db.prepare(`INSERT INTO emails
+    (id,owner_id,sender_id,from_email,to_email,cc,bcc,subject,body,attachments,folder,star,is_read,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, req.user.id, req.user.id, req.user.email, payload.to, payload.cc, payload.bcc,
+      payload.subject, payload.body, JSON.stringify(attachments), action === 'send' ? 'sent' : 'drafts',
+      0, action === 'send' ? 1 : 0, now());
+  const delivered = action === 'send' ? deliverEmail(req, payload, attachments, recipients) : [];
+  emitToUser(ioOf(req), req.user.id, 'mail:updated', { unread: unreadMail(req.user.id) });
+  res.status(201).json({ email: serializeEmail(db.prepare('SELECT * FROM emails WHERE id = ?').get(id), req.user.id), delivered: delivered.length });
+}));
+
+router.put('/mail/:id', requireAuth, mailUpload.array('files', 10), wrap((req, res) => {
+  const row = db.prepare('SELECT * FROM emails WHERE id = ? AND owner_id = ?').get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'Correo no encontrado' });
+  if (row.folder !== 'drafts') return res.status(400).json({ error: 'Solo puedes editar borradores' });
+  const action = req.body.action === 'draft' ? 'draft' : 'send';
+  const payload = {
+    to: String(req.body.to ?? row.to_email).trim(),
+    cc: String(req.body.cc ?? row.cc).trim(),
+    bcc: String(req.body.bcc ?? row.bcc).trim(),
+    subject: String(req.body.subject ?? row.subject).trim().slice(0, 200),
+    body: String(req.body.body ?? row.body).trim().slice(0, 20000),
+  };
+  const recipients = parseRecipients(`${payload.to},${payload.cc},${payload.bcc}`);
+  if (action === 'send' && (!recipients.length || !payload.subject || !payload.body))
+    return res.status(400).json({ error: 'Completa destinatario, asunto y mensaje' });
+  const additions = mailAttachments(req.files);
+  let attachments = [];
+  try { attachments = JSON.parse(row.attachments || '[]'); } catch { attachments = []; }
+  attachments = attachments.concat(additions);
+  if (action === 'send') {
+    db.prepare('DELETE FROM emails WHERE id = ?').run(row.id);
+    const id = uid();
+    db.prepare(`INSERT INTO emails
+      (id,owner_id,sender_id,from_email,to_email,cc,bcc,subject,body,attachments,folder,star,is_read,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, req.user.id, req.user.id, req.user.email, payload.to, payload.cc, payload.bcc,
+        payload.subject, payload.body, JSON.stringify(attachments), 'sent', 0, 1, now());
+    const delivered = deliverEmail(req, payload, attachments, recipients);
+    emitToUser(ioOf(req), req.user.id, 'mail:updated', { unread: unreadMail(req.user.id) });
+    return res.json({ email: serializeEmail(db.prepare('SELECT * FROM emails WHERE id = ?').get(id), req.user.id), delivered: delivered.length });
+  }
+  db.prepare('UPDATE emails SET to_email=?,cc=?,bcc=?,subject=?,body=?,attachments=?,created_at=? WHERE id=?')
+    .run(payload.to, payload.cc, payload.bcc, payload.subject, payload.body, JSON.stringify(attachments), now(), row.id);
+  res.json({ email: serializeEmail(db.prepare('SELECT * FROM emails WHERE id = ?').get(row.id), req.user.id) });
+}));
+
+router.post('/mail/:id/star', requireAuth, wrap((req, res) => {
+  const row = db.prepare('SELECT * FROM emails WHERE id = ? AND owner_id = ?').get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'Correo no encontrado' });
+  db.prepare('UPDATE emails SET star = ? WHERE id = ?').run(row.star ? 0 : 1, row.id);
+  emitToUser(ioOf(req), req.user.id, 'mail:updated', { unread: unreadMail(req.user.id) });
+  res.json({ star: !row.star });
+}));
+
+router.post('/mail/:id/read', requireAuth, wrap((req, res) => {
+  const row = db.prepare('SELECT * FROM emails WHERE id = ? AND owner_id = ?').get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'Correo no encontrado' });
+  db.prepare('UPDATE emails SET is_read = ? WHERE id = ?').run(req.body.read === false ? 0 : 1, row.id);
+  emitToUser(ioOf(req), req.user.id, 'mail:updated', { unread: unreadMail(req.user.id) });
+  res.json({ ok: true });
+}));
+
+router.post('/mail/:id/trash', requireAuth, wrap((req, res) => {
+  const row = db.prepare('SELECT * FROM emails WHERE id = ? AND owner_id = ?').get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'Correo no encontrado' });
+  db.prepare('UPDATE emails SET folder = ? WHERE id = ?').run(row.folder === 'trash' ? 'inbox' : 'trash', row.id);
+  emitToUser(ioOf(req), req.user.id, 'mail:updated', { unread: unreadMail(req.user.id) });
+  res.json({ ok: true });
+}));
+
+router.delete('/mail/:id', requireAuth, wrap((req, res) => {
+  const row = db.prepare('SELECT * FROM emails WHERE id = ? AND owner_id = ?').get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'Correo no encontrado' });
+  db.prepare('DELETE FROM emails WHERE id = ?').run(row.id);
+  emitToUser(ioOf(req), req.user.id, 'mail:updated', { unread: unreadMail(req.user.id) });
+  res.json({ ok: true });
+}));
+
+router.post('/mail/bulk', requireAuth, wrap((req, res) => {
+  const raw = Array.isArray(req.body.recipients) ? req.body.recipients.join(',') : String(req.body.recipients || '');
+  const recipients = parseRecipients(raw);
+  const subject = String(req.body.subject || '').trim().slice(0, 200);
+  const body = String(req.body.body || '').trim().slice(0, 20000);
+  if (!recipients.length) return res.status(400).json({ error: 'Agrega destinatarios' });
+  if (recipients.length > 100) return res.status(400).json({ error: 'Máximo 100 destinatarios por campaña' });
+  if (!subject || !body) return res.status(400).json({ error: 'Completa asunto y mensaje' });
+  const allowed = new Set(db.prepare('SELECT email FROM mail_contacts WHERE user_id = ?').all(req.user.id).map((c) => c.email));
+  const invalid = recipients.filter((email) => !allowed.has(email));
+  if (invalid.length) return res.status(400).json({ error: `Solo puedes enviar a contactos: ${invalid.slice(0, 3).join(', ')}` });
+
+  const id = uid();
+  db.prepare(`INSERT INTO emails
+    (id,owner_id,sender_id,from_email,to_email,cc,bcc,subject,body,attachments,folder,star,is_read,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, req.user.id, req.user.id, req.user.email, recipients.join(', '), '', '', subject, body, '[]', 'sent', 0, 1, now());
+  const delivered = deliverEmail(req, { to: recipients.join(', '), cc: '', bcc: '', subject, body }, [], recipients);
+  emitToUser(ioOf(req), req.user.id, 'mail:updated', { unread: unreadMail(req.user.id) });
+  res.json({ email: serializeEmail(db.prepare('SELECT * FROM emails WHERE id = ?').get(id), req.user.id), delivered: delivered.length });
 }));
 
 router.use((err, req, res, next) => {

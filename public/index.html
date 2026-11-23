@@ -63,6 +63,7 @@
           <div class="brand-small"><span class="logo-mark">N</span><span class="brand-name">Nexo <b>Chat</b></span></div>
           <div class="icon-actions">
             <button class="icon-btn" data-action="new-chat" title="Nuevo chat"><span data-icon="plus"></span></button>
+            <button class="icon-btn" data-action="open-mail" title="Correo"><span data-icon="mail"></span><i id="mail-badge" class="badge-dot hidden"></i></button>
             <button class="icon-btn" data-action="notifications" title="Notificaciones"><span data-icon="bell"></span><i id="notif-badge" class="badge-dot hidden"></i></button>
             <button class="icon-btn" data-action="theme" title="Cambiar tema"><span data-icon="moon"></span></button>
             <button class="icon-btn" data-action="settings" title="Ajustes"><span data-icon="settings"></span></button>
@@ -125,6 +126,23 @@
         </div>
       </div>
     </main>
+
+    <!-- ============================ MAIL ============================ -->
+    <section id="mail-view" class="mail-view hidden">
+      <aside class="mail-folders">
+        <div class="mail-folders-head"><span data-icon="mail"></span><strong>Correo</strong><button class="icon-btn" data-action="close-mail" title="Volver a los chats"><span data-icon="x"></span></button></div>
+        <div id="mail-folders-list"></div>
+        <button class="btn btn-primary btn-block btn-sm" style="margin-top:14px" data-action="mail-compose">✉ Redactar</button>
+      </aside>
+      <section class="mail-list-pane">
+        <div class="mail-list-top">
+          <input id="mail-search" type="search" placeholder="Buscar correos…" />
+          <button class="icon-btn" data-action="mail-refresh" title="Actualizar"><span data-icon="refresh"></span></button>
+        </div>
+        <div class="mail-list" id="mail-list"></div>
+      </section>
+      <section class="mail-reader" id="mail-reader"></section>
+    </section>
 
     <aside class="details-panel hidden" id="details-panel"></aside>
   </div>
