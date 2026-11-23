@@ -1,0 +1,19 @@
+{
+  "name": "nexo-chat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chat en tiempo real con chats privados, grupos, llamadas, estados, IA y panel de administración",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --experimental-sqlite server/index.js",
+    "dev": "node --watch --experimental-sqlite server/index.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^2.5.0",
+    "socket.io": "^4.8.1"
+  }
+}
